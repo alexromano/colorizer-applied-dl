@@ -7,6 +7,7 @@ from keras.callbacks import Callback
 import tensorflow as tf
 import random
 import glob
+import math
 # import wandb
 # from wandb.keras import WandbCallback
 import subprocess
@@ -20,8 +21,8 @@ from skimage import io, color
 # run = wandb.init(project='colorizer-applied-dl')
 # = run.config
 
-num_epochs = 1
-batch_size = 4
+num_epochs = 10
+batch_size = 8
 img_dir = "images"
 height = 256
 width = 256
@@ -34,21 +35,25 @@ if not os.path.exists("train"):
     print("Downloading flower dataset...")
     subprocess.check_output("curl https://storage.googleapis.com/l2kzone/flowers.tar | tar xz", shell=True)
 
-def my_generator(batch_size, img_dir):
+train_size = len(os.listdir('train'))
+
+def batch_generator(batch_size, img_dir):
     """A generator that returns black and white images and color images"""
     image_filenames = glob.glob(img_dir + "/*")
     counter = 0
     while True:
-        bw_images = np.zeros((batch_size, width, height))
-        color_images = np.zeros((batch_size, width, height, 3))
+        L_images = np.zeros((batch_size, width, height, 1))
+        ab_images = np.zeros((batch_size, width, height, 2))
         random.shuffle(image_filenames) 
         if ((counter+1)*batch_size>=len(image_filenames)):
               counter = 0
         for i in range(batch_size):
-              img = Image.open(image_filenames[counter + i]).resize((width, height))
-              color_images[i] = np.array(img)
-              bw_images[i] = np.array(img.convert('L'))
-        yield (bw_images, color_images)
+              rgb = io.imread(image_filenames[counter + i])
+              lab = np.resize(np.array(color.rgb2lab(rgb)), (width, height, 3))
+              L_images[i] = np.expand_dims(np.array(lab[:,:,0]), axis=3)
+              ab_images[i] = np.array(lab[:,:,1:])
+              
+        yield (L_images, ab_images)
         counter += batch_size
 
 def get_model(img_width, img_height):
@@ -87,13 +92,6 @@ def get_model(img_width, img_height):
 
       return model
 
-      # model.add(Reshape((height,width,1), input_shape=(config.height,config.width)))
-      # model.add(Conv2D(32, (3, 3), activation='relu', padding='same'))
-      # model.add(MaxPooling2D(2,2))
-      # model.add(Conv2D(32, (3, 3), activation='relu', padding='same'))
-      # model.add(UpSampling2D((2, 2)))
-      # model.add(Conv2D(3, (3, 3), activation='relu', padding='same'))
-
 def perceptual_distance(y_true, y_pred):
     rmean = ( y_true[:,:,:,0] + y_pred[:,:,:,0] ) / 2
     r = y_true[:,:,:,0] - y_pred[:,:,:,0]
@@ -104,18 +102,10 @@ def perceptual_distance(y_true, y_pred):
 
 
 # (val_bw_images, val_color_images) = next(my_generator(145, val_dir))
-
-# model.fit_generator( my_generator(batch_size, train_dir),
-#                      steps_per_epoch=2,
-#                      epochs=num_epochs, callbacks=[WandbCallback(data_type='image', predictions=16)],
-#                      validation_data=(val_bw_images, val_color_images))
-X = tf.zeros((1, 256, 256, 1))
-Y = tf.zeros((1, 256, 256, 2))
-model = get_model(256, 256)
-learning_rate = 1e-5
-model.compile(optimizer=Adam(lr=learning_rate), loss='mse')#, metrics=[perceptual_distance])
-model.fit(X, Y, epochs=1, steps_per_epoch=1)
-# res_net = ResNet50(include_top=True, weights='imagenet') # 1001x1x1
-# res_net.compile(optimizer='adam', loss='categorical_crossentropy')
-# res_net.fit(X, Y, epochs=1, steps_per_epoch=1)
-
+model = get_model(width, height)
+model.compile(optimizer=Adam(lr=1e-4), loss='mse')
+model.fit_generator(batch_generator(batch_size, train_dir),
+                     #steps_per_epoch=int(math.ceil(train_size/batch_size)),
+                     steps_per_epoch=50,
+                     epochs=num_epochs)
+                     #validation_data=(val_bw_images, val_color_images))
